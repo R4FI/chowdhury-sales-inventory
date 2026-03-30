@@ -12,6 +12,7 @@ import StockManagement from "@/pages/StockManagement";
 import Reports from "@/pages/Reports";
 import Commission from "@/pages/Commission";
 import MonthSummaryUpdate from "@/pages/MonthSummaryUpdate";
+import MonthlyInvoice from "@/pages/MonthlyInvoice";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -37,6 +38,7 @@ const App = () => (
             <Route path="/commission" element={<Commission />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/month-summary" element={<MonthSummaryUpdate />} />
+            <Route path="/monthly-invoice" element={<MonthlyInvoice />} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>

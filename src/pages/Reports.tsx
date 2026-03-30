@@ -3,7 +3,6 @@ import {
   Download,
   Calendar as CalendarIcon,
   Package,
-  TrendingUp,
   DollarSign,
   RefreshCw,
 } from "lucide-react";
@@ -27,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { format } from "date-fns";
+import { toast } from "sonner";
 
 const Reports = () => {
   const { month } = useMonthSummary();
@@ -37,11 +37,106 @@ const Reports = () => {
   const [selectedMonthData, setSelectedMonthData] =
     useState<MonthSummary | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const { commission } = useMonthCommission(selectedMonth || month.month_id);
 
-  // Manual refresh function
-  const handleRefresh = () => {
-    setRefreshKey((prev) => prev + 1);
+  // Manual refresh function - recalculates and updates month data based on transactions
+  const handleRefresh = async () => {
+    if (!selectedMonth || !isSupabaseConfigured() || !supabase) {
+      toast.error("Please select a valid month");
+      return;
+    }
+
+    setIsRefreshing(true);
+
+    try {
+      // Get current month data
+      const { data: currentMonthData, error: fetchError } = await supabase
+        .from("month_summary")
+        .select("*")
+        .eq("month_id", selectedMonth)
+        .single();
+
+      if (fetchError) {
+        toast.error("Failed to fetch month data");
+        setIsRefreshing(false);
+        return;
+      }
+
+      // Get transactions for this month
+      const monthTxs = transactions.filter((tx) => {
+        const date = new Date(tx.date);
+        const txMonth = format(date, "MMM-yyyy").toLowerCase();
+        return txMonth === selectedMonth;
+      });
+
+      // Calculate bottles sold
+      const bottlesSold = monthTxs.reduce((sum, tx) => sum + tx.qty, 0);
+
+      // Calculate financial data from transactions
+      const grossRevenue = monthTxs.reduce((sum, tx) => sum + tx.revenue, 0);
+
+      // Calculate remaining stock (carry forward)
+      const openingStock = currentMonthData.opening_stock;
+      const totalRestocked = currentMonthData.total_restocked; // User provided
+      const remainingStock = openingStock + totalRestocked - bottlesSold;
+
+      // Keep existing buying cost and operating expenses, only update revenue and profit
+      const totalBuyingCost = currentMonthData.total_buying_cost;
+      const operatingExpenses = currentMonthData.operating_expenses;
+      const netProfit = grossRevenue - totalBuyingCost - operatingExpenses;
+
+      // Update month_summary with calculated values
+      const { error: updateError } = await supabase
+        .from("month_summary")
+        .update({
+          gross_revenue: grossRevenue,
+          net_profit: netProfit,
+          carry_forward_stock: remainingStock,
+          full_bottles: remainingStock, // Update current stock
+        })
+        .eq("month_id", selectedMonth);
+
+      if (updateError) {
+        toast.error("Failed to update month data");
+        console.error(updateError);
+        setIsRefreshing(false);
+        return;
+      }
+
+      // Check if there's a next month and update its opening stock
+      const { data: allMonths } = await supabase
+        .from("month_summary")
+        .select("month_id")
+        .order("month_id", { ascending: true });
+
+      if (allMonths) {
+        const currentIndex = allMonths.findIndex(
+          (m) => m.month_id === selectedMonth,
+        );
+        if (currentIndex !== -1 && currentIndex < allMonths.length - 1) {
+          const nextMonthId = allMonths[currentIndex + 1].month_id;
+
+          // Update next month's opening stock with current month's carry forward
+          await supabase
+            .from("month_summary")
+            .update({ opening_stock: remainingStock })
+            .eq("month_id", nextMonthId);
+        }
+      }
+
+      toast.success(
+        `Data refreshed! Sold: ${bottlesSold}, Remaining: ${remainingStock}`,
+      );
+
+      // Trigger UI refresh
+      setRefreshKey((prev) => prev + 1);
+    } catch (error) {
+      toast.error("An error occurred while refreshing");
+      console.error(error);
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   // Get unique months from transactions
@@ -242,10 +337,13 @@ const Reports = () => {
             variant="outline"
             size="sm"
             onClick={handleRefresh}
+            disabled={isRefreshing}
             className="gap-2"
           >
-            <RefreshCw className="h-4 w-4" />
-            Refresh Data
+            <RefreshCw
+              className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
+            />
+            {isRefreshing ? "Refreshing..." : "Refresh Data"}
           </Button>
         </div>
       </div>
@@ -258,7 +356,7 @@ const Reports = () => {
             <span className="text-xs text-muted-foreground">OPENING STOCK</span>
           </div>
           <p className="text-3xl font-bold font-mono text-blue-500">
-            {month.total_restocked}
+            {selectedMonthData?.opening_stock || 0}
           </p>
           <p className="text-xs text-muted-foreground mt-1">Start of month</p>
         </div>
@@ -293,19 +391,21 @@ const Reports = () => {
             <span className="text-xs text-muted-foreground">REMAINING</span>
           </div>
           <p className="text-3xl font-bold font-mono text-warning">
-            {month.opening_stock +
-              month.total_restocked -
-              monthlyStats.totalSold}
+            {selectedMonthData
+              ? selectedMonthData.opening_stock +
+                selectedMonthData.total_restocked -
+                monthlyStats.totalSold
+              : 0}
           </p>
           <p className="text-xs text-muted-foreground mt-1">Available stock</p>
         </div>
 
-        <div className="bg-card rounded-xl border p-5">
+        <div className="bg-card rounded-xl border p-5 w-full">
           <div className="flex items-center gap-2 mb-2">
-            <DollarSign className="h-4 w-4 text-success" />
+            <DollarSign className="h-4 w- text-success" />
             <span className="text-xs text-muted-foreground">NET PROFIT</span>
           </div>
-          <p className="text-3xl font-bold font-mono text-success">
+          <p className="text-2xl font-bold font-mono text-success">
             TK{monthlyStats.netProfit.toLocaleString()}
           </p>
           <p className="text-xs text-muted-foreground mt-1">After all costs</p>
